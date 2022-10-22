@@ -1,0 +1,81 @@
+#!/bin/bash
+
+#v1.03
+
+# Sollen die Ergebnisse an einen Syslog-Server gesendet werden?
+send_syslog=n #Moegliche Paramter: N|n|J|j|Y|y oder LEER
+#Syslog-Server (IP oder Adresse)
+srvadr=178.254.23.164
+#Syslog-Server Port
+srvport=62324
+#Seriennummer der Anlage
+serial=5000098
+
+#Pruefen ob die Datei /var/log/asterisk/full existiert
+ast_full=/var/log/asterisk/full
+if test -f "$ast_full"; then
+echo "$ast_full exists."
+else
+echo "$ast_full does not exists."
+touch $ast_full && chmod 640 $ast_full && chown asterisk:asterisk $ast_full
+fi
+
+#Pruefen ob die Datei /var/log/asterisk/messages existiert
+ast_msg=/var/log/asterisk/messages
+if test -f "$ast_msg"; then
+echo "$ast_msg exists."
+else
+echo "$ast_msg does not exists."
+touch $ast_msg && chmod 640 $ast_msg && chown asterisk:asterisk $ast_msg
+fi
+
+### Pruefen der PJSIP-Leitungen
+echo "Pruefen der PJSIP-Leitungen"
+pjsip_leitungen=()
+readarray -t pjsip_leitungen < <(asterisk -rx "pjsip show registrations" | sed -e '1,4d' | sed -n -e :a -e '1,3!{P;N;D;};N;ba' | awk '{print $2}')
+if [ -z "$pjsip_leitungen" ]; then
+   echo "PJSIP-Array empty - nothing to do"
+else
+   echo "PJSIP-Array non empty - checking lines"
+       for check_pjsip_line in "${pjsip_leitungen[@]}"
+       do
+       if asterisk -rx "pjsip show registration $check_pjsip_line" | grep -i "Registered" 1> /dev/null
+       then
+       echo "PJSIP-LINE $check_pjsip_line REGISTERED"
+       #echo [`date +%b" "%d` `date +"%T"`] "NOTICE: All PJSIP-Lines registered" | tee -a $ast_full $ast_msg
+       else
+       echo "PJSIP-LINE $check_pjsip_line UNREGISTERED"
+       asterisk -rx "pjsip send register $check_pjsip_line"
+       logger -p syslog.info -t PBX-MESSAGE "ERROR: PJSIP-Line ($check_pjsip_line) unregistered -  send register PJSIP-Line"
+       if [[ "$send_syslog" =~ ^(y|Y|j|J)$ ]]; then logger -n $srvadr -P $srvport -i -t PBX-MESSAGE "$serial: ERROR: PJSIP-Line ($check_pjsip_line) unregistered -  send register PJSIP-Line"; fi
+       echo [`date +%b" "%d` `date +"%T"`] "ERROR: PJSIP-Line ($check_pjsip_line) unregistered -  send register PJSIP-Line" | tee -a $ast_full $ast_msg
+       fi
+       done
+fi
+
+### Pruefen der SIP-Leitungen
+echo "Pruefen der SIP-Leitungen"
+sip_leitungen=()
+readarray -t sip_leitungen < <(asterisk -rx "sip show registry" | sed -e '1d' | sed '$d')
+if [ -z "$sip_leitungen" ]; then
+   echo "SIP-Array empty - nothing to do"
+else
+   echo "SIP-Array non empty - checking lines"
+       for check_sip_line in "${sip_leitungen[@]}"
+       do
+       if grep -q Registered <<<"$check_sip_line"
+       then
+       sip_linename=$( echo $check_sip_line |awk '{print $1}')
+       echo "SIP-LINE $sip_linename REGISTERED"
+       #echo [`date +%b" "%d` `date +"%T"`] "NOTICE: All SIP-Lines registered" | tee -a $ast_full $ast_msg
+       else
+       sip_linename=$( echo $check_sip_line |awk '{print $1}')
+       echo "SIP-LINE $sip_linename UNREGISTERED"
+       asterisk -rx "sip reload"
+       logger -p syslog.info -t PBX-MESSAGE "ERROR: SIP-Line ($sip_linename) unregistered - send register SIP-Lines"
+       if [[ "$send_syslog" =~ ^(y|Y|j|J)$ ]]; then logger -n $srvadr -P $srvport -i -t PBX-MESSAGE "$serial: ERROR: SIP-Line ($sip_linename) unregistered - send register SIP-Lines"; fi
+       echo [`date +%b" "%d` `date +"%T"`] "ERROR: SIP-Line ($sip_linename) unregistered - send register SIP-Lines" | tee -a $ast_full $ast_msg
+       fi
+       done
+fi
+ 
